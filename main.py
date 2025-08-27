@@ -382,6 +382,255 @@ def orders_by_month(ctx: Context):
         cur.close()
         conn.close()
 
+@mcp.tool()
+def orders_by_product(ctx: Context, product_id: int = None, product_name: str = None):
+    """
+    Get all orders that include a specific product.
+    You can search either by product_id or product_name.
+    If both are given, product_id takes priority.
+    """
+    if not product_id and not product_name:
+        return "Please provide either a product_id or product_name"
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        if product_id:
+            cur.execute("""
+                SELECT 
+                    o.order_id,
+                    d.full_date AS order_date,
+                    o.order_status,
+                    c.first_name || ' ' || c.last_name AS customer_name,
+                    s.store_name,
+                    p.product_name,
+                    oi.quantity,
+                    oi.unit_price,
+                    oi.total_price,
+                    o.total_amount AS order_total,
+                    o.total_items
+                FROM fact_order_items oi
+                JOIN fact_orders o ON oi.order_id = o.order_id
+                JOIN dim_product p ON oi.product_id = p.product_id
+                JOIN dim_customer c ON o.customer_id = c.customer_id
+                JOIN dim_store s ON o.store_id = s.store_id
+                JOIN dim_date d ON o.order_date_id = d.date_id
+                WHERE oi.product_id = %s
+                ORDER BY d.full_date DESC, o.order_id
+            """, (product_id,))
+        else:  # product_name search
+            cur.execute("""
+                SELECT 
+                    o.order_id,
+                    d.full_date AS order_date,
+                    o.order_status,
+                    c.first_name || ' ' || c.last_name AS customer_name,
+                    s.store_name,
+                    p.product_name,
+                    oi.quantity,
+                    oi.unit_price,
+                    oi.total_price,
+                    o.total_amount AS order_total,
+                    o.total_items
+                FROM fact_order_items oi
+                JOIN fact_orders o ON oi.order_id = o.order_id
+                JOIN dim_product p ON oi.product_id = p.product_id
+                JOIN dim_customer c ON o.customer_id = c.customer_id
+                JOIN dim_store s ON o.store_id = s.store_id
+                JOIN dim_date d ON o.order_date_id = d.date_id
+                WHERE LOWER(p.product_name) LIKE LOWER(%s)
+                ORDER BY d.full_date DESC, o.order_id
+            """, (f"%{product_name}%",))
+
+        rows = cur.fetchall()
+        if not rows:
+            return f"No orders found for product_id={product_id} or product_name='{product_name}'"
+        return rows
+    finally:
+        cur.close()
+        conn.close()
+
+@mcp.tool()
+def orders_by_store(ctx: Context, store_id: int):
+    """
+    Get all orders for a specific store.
+    Returns order_id, date, customer, totals, and status.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT 
+                o.order_id,
+                d.full_date AS order_date,
+                o.order_status,
+                c.first_name || ' ' || c.last_name AS customer_name,
+                s.store_name,
+                o.total_amount,
+                o.total_items
+            FROM fact_orders o
+            JOIN dim_customer c ON o.customer_id = c.customer_id
+            JOIN dim_store s ON o.store_id = s.store_id
+            JOIN dim_date d ON o.order_date_id = d.date_id
+            WHERE o.store_id = %s
+            ORDER BY d.full_date DESC, o.order_id
+        """, (store_id,))
+        rows = cur.fetchall()
+        if not rows:
+            return f"No orders found for store_id {store_id}"
+        return rows
+    finally:
+        cur.close()
+        conn.close()
+
+@mcp.tool()
+def top_products_by_store(ctx: Context, store_id: int, limit: int = 2):
+    """
+    Return the top N selling products for a store, ranked by total revenue.
+    Default = top 2 products.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT 
+                p.product_name,
+                SUM(oi.quantity) AS total_quantity,
+                SUM(oi.total_price) AS total_revenue
+            FROM fact_order_items oi
+            JOIN fact_orders o ON oi.order_id = o.order_id
+            JOIN dim_product p ON oi.product_id = p.product_id
+            WHERE o.store_id = %s
+            GROUP BY p.product_name
+            ORDER BY total_revenue DESC
+            LIMIT %s
+        """, (store_id, limit))
+        rows = cur.fetchall()
+        if not rows:
+            return f"No product sales found for store_id {store_id}"
+        return rows
+    finally:
+        cur.close()
+        conn.close()
+
+
+# -------------------------------------------------------
+# Metadata Exploration Tools
+# -------------------------------------------------------
+
+@mcp.tool()
+def list_tables(ctx: Context, schema: str = 'public'):
+    """List all tables in the given schema (default: public)."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = %s
+            ORDER BY table_name
+        """, (schema,))
+        rows = cur.fetchall()
+        return [r['table_name'] for r in rows]
+    finally:
+        cur.close()
+        conn.close()
+
+@mcp.tool()
+def list_columns(ctx: Context, table_name: str, schema: str = 'public'):
+    """List all columns in a table along with data types and nullability."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT column_name, data_type, is_nullable, character_maximum_length, numeric_precision, numeric_scale
+            FROM information_schema.columns
+            WHERE table_name = %s AND table_schema = %s
+            ORDER BY ordinal_position
+        """, (table_name, schema))
+        rows = cur.fetchall()
+        return rows
+    finally:
+        cur.close()
+        conn.close()
+
+@mcp.tool()
+def get_primary_keys(ctx: Context, table_name: str, schema: str = 'public'):
+    """Return the primary key column(s) of a table."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+             AND tc.table_schema = kcu.table_schema
+            WHERE tc.table_name = %s
+              AND tc.table_schema = %s
+              AND tc.constraint_type = 'PRIMARY KEY'
+            ORDER BY kcu.ordinal_position
+        """, (table_name, schema))
+        rows = cur.fetchall()
+        return [r['column_name'] for r in rows]
+    finally:
+        cur.close()
+        conn.close()
+
+@mcp.tool()
+def get_foreign_keys(ctx: Context, table_name: str, schema: str = 'public'):
+    """Return foreign key constraints (column references) for a table."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT
+                kcu.column_name AS fk_column,
+                ccu.table_name AS referenced_table,
+                ccu.column_name AS referenced_column
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+             AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+              ON ccu.constraint_name = tc.constraint_name
+             AND ccu.table_schema = tc.table_schema
+            WHERE tc.table_name = %s
+              AND tc.table_schema = %s
+              AND tc.constraint_type = 'FOREIGN KEY'
+        """, (table_name, schema))
+        rows = cur.fetchall()
+        return rows
+    finally:
+        cur.close()
+        conn.close()
+
+@mcp.tool()
+def get_table_row_count(ctx: Context, table_name: str, schema: str = 'public'):
+    """Return the number of rows in a table (fast estimate for large tables)."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT COUNT(*) AS row_count FROM {schema}.{table_name}")
+        return cur.fetchone()['row_count']
+    finally:
+        cur.close()
+        conn.close()
+
+@mcp.tool()
+def get_table_size(ctx: Context, table_name: str, schema: str = 'public'):
+    """Return size of the table in MB."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT pg_size_pretty(pg_total_relation_size(%s))
+        """, (f"{schema}.{table_name}",))
+        return cur.fetchone()[0]
+    finally:
+        cur.close()
+        conn.close()
+
 
 # ------------------------------
 # Run the MCP server
