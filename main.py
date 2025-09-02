@@ -1,6 +1,7 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from mcp.server.fastmcp import FastMCP, Context
+from datetime import datetime, timedelta
 
 # Initialize MCP server
 mcp = FastMCP("PostgresServer")
@@ -761,6 +762,86 @@ def update_job_status(job_name: str, status: str, rows_loaded: int = None,
         updated = cur.fetchone()
         conn.commit()
         return updated
+
+@mcp.tool()
+def get_sla_breaches(max_minutes: int):
+    """
+    Find ETL jobs that exceeded their SLA threshold in minutes.
+    
+    Args:
+        max_minutes (int): Maximum expected duration for a job in minutes.
+    
+    Returns:
+        A list of jobs that took longer than the given threshold.
+    """
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT job_name, start_time, end_time,
+                   EXTRACT(EPOCH FROM (end_time - start_time)) / 60 AS duration_minutes
+            FROM etl_load_status
+            WHERE status = 'SUCCESS'
+              AND end_time IS NOT NULL
+              AND (EXTRACT(EPOCH FROM (end_time - start_time)) / 60) > %s
+            ORDER BY duration_minutes DESC
+        """, (max_minutes,))
+        return cur.fetchall()
+
+
+@mcp.tool()
+def get_job_success_rate():
+    """
+    Calculate the success rate of ETL jobs.
+    
+    Returns:
+        A breakdown per job name, including total runs, number of successes,
+        and overall success percentage.
+    """
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT job_name,
+                   COUNT(*) AS total_runs,
+                   SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) AS successful_runs,
+                   ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) AS success_rate_pct
+            FROM etl_load_status
+            GROUP BY job_name
+            ORDER BY success_rate_pct DESC
+        """)
+        return cur.fetchall()
+
+
+@mcp.tool()
+def summarize_etl_health():
+    """
+    Generate a natural language health summary of ETL jobs in the last 24 hours.
+    
+    Returns:
+        A string summarizing how many jobs ran, how many succeeded,
+        how many failed, and average run duration.
+    """
+    with get_db_connection() as conn, conn.cursor() as cur:
+        since = datetime.utcnow() - timedelta(days=1)
+
+        cur.execute("SELECT COUNT(*) FROM etl_load_status WHERE start_time >= %s", (since,))
+        total = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM etl_load_status WHERE start_time >= %s AND status = 'SUCCESS'", (since,))
+        succeeded = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM etl_load_status WHERE start_time >= %s AND status = 'FAILED'", (since,))
+        failed = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60)
+            FROM etl_load_status
+            WHERE status = 'SUCCESS' AND start_time >= %s
+        """, (since,))
+        avg_duration = cur.fetchone()[0]
+
+    return (
+        f"In the last 24 hours, {total} jobs ran: "
+        f"{succeeded} succeeded, {failed} failed. "
+        f"Average successful job duration was {avg_duration:.1f} minutes."
+    )
 
 
 # ------------------------------
