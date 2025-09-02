@@ -17,6 +17,10 @@ DB_CONFIG = {
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
 
+# ------------------------------------------------------
+# Tools
+# ------------------------------------------------------
+
 # ------------------------------
 # READ
 # ------------------------------
@@ -630,6 +634,133 @@ def get_table_size(ctx: Context, table_name: str, schema: str = 'public'):
     finally:
         cur.close()
         conn.close()
+
+# -------------------------------------------------------
+# ETL Monitoring Tools
+# -------------------------------------------------------
+
+@mcp.tool()
+def get_last_failed_jobs():
+    """
+    Retrieve the most recent 10 failed ETL jobs from the etl_load_status table.
+    
+    Useful for production support teams to quickly diagnose recurring issues
+    and investigate recent failures across all ETL pipelines.
+    """
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT * FROM etl_load_status
+            WHERE status = 'FAILED'
+            ORDER BY start_time DESC
+            LIMIT 10
+        """)
+        return cur.fetchall()
+
+
+@mcp.tool()
+def get_running_jobs():
+    """
+    List all ETL jobs that are currently running.
+    
+    Helps support teams monitor live pipelines and identify which jobs 
+    are still in progress, potentially useful for SLA tracking.
+    """
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM etl_load_status WHERE status = 'RUNNING'")
+        return cur.fetchall()
+
+
+@mcp.tool()
+def get_avg_load_time():
+    """
+    Compute the average load duration (in minutes) for each ETL job name.
+    
+    This metric helps identify long-running jobs, trends in execution time,
+    and performance regressions over time for specific pipelines.
+    """
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT job_name,
+                   AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60) AS avg_minutes
+            FROM etl_load_status
+            WHERE status = 'SUCCESS'
+            GROUP BY job_name
+        """)
+        return cur.fetchall()
+
+
+@mcp.tool()
+def get_recent_runs(job_name: str):
+    """
+    Retrieve the last 5 runs for a specific ETL job.
+    
+    Args:
+        job_name (str): The name of the ETL job to filter by.
+    
+    Returns:
+        A list of the last 5 executions with their statuses, timings,
+        and metadata for the given job.
+    """
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT * FROM etl_load_status
+            WHERE job_name = %s
+            ORDER BY start_time DESC
+            LIMIT 5
+        """, (job_name,))
+        return cur.fetchall()
+
+
+@mcp.tool()
+def get_largest_datasets():
+    """
+    Retrieve the top 10 largest dataset loads based on dataset_size_mb.
+    
+    Useful for tracking data growth, identifying unusually large loads,
+    and ensuring ETL jobs are not overwhelming infrastructure resources.
+    """
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT job_name, rows_loaded, dataset_size_mb, end_time
+            FROM etl_load_status
+            WHERE status = 'SUCCESS'
+            ORDER BY dataset_size_mb DESC
+            LIMIT 10
+        """)
+        return cur.fetchall()
+
+
+@mcp.tool()
+def update_job_status(job_name: str, status: str, rows_loaded: int = None,
+                      dataset_size_mb: float = None, error_message: str = None):
+    """
+    Update the status of a running ETL job once it completes.
+    
+    Args:
+        job_name (str): The name of the ETL job to update.
+        status (str): Final status of the job ('SUCCESS' or 'FAILED').
+        rows_loaded (int, optional): Number of rows successfully loaded.
+        dataset_size_mb (float, optional): Size of dataset loaded in MB.
+        error_message (str, optional): Error details if the job failed.
+    
+    This tool allows orchestrators or support teams to finalize job state
+    and record outcome metadata in the monitoring table.
+    """
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE etl_load_status
+            SET status = %s,
+                rows_loaded = COALESCE(%s, rows_loaded),
+                dataset_size_mb = COALESCE(%s, dataset_size_mb),
+                end_time = NOW(),
+                error_message = %s
+            WHERE job_name = %s
+              AND status = 'RUNNING'
+            RETURNING job_id, job_name, status, rows_loaded, dataset_size_mb, end_time, error_message
+        """, (status, rows_loaded, dataset_size_mb, error_message, job_name))
+        updated = cur.fetchone()
+        conn.commit()
+        return updated
 
 
 # ------------------------------
