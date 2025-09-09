@@ -14,7 +14,7 @@ DECLARE
     j INT;
     v_num_items INT;
 BEGIN
-    FOR i IN 1..100 LOOP
+    FOR i IN 1..1000 LOOP
         -- Random customer (1–4)
         v_cust_id := (SELECT (floor(random()*4)+1)::int);
         -- Random store (1–3)
@@ -23,7 +23,7 @@ BEGIN
         v_new_date_id := (
             SELECT date_id
             FROM dim_date
-            WHERE full_date BETWEEN '2023-01-01' AND '2024-12-31'
+            WHERE full_date BETWEEN '2023-01-01' AND '2025-09-30'
             ORDER BY random()
             LIMIT 1
         );
