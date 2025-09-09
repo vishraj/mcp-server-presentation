@@ -69,4 +69,3 @@ INSERT INTO fact_order_items (order_id, product_id, quantity, unit_price, total_
 (5, 5, 3, 80.00, 240.00);
 
 
-

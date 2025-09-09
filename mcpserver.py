@@ -1,5 +1,9 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from datetime import datetime, date, timedelta
+from dateutil.relativedelta import relativedelta
+import re
+
 #from mcp.server.fastmcp import FastMCP, Context
 from InlineAgent.agent import InlineAgent
 from InlineAgent.action_group import ActionGroup
@@ -448,16 +452,21 @@ def order_items(order_id: int):
 # Analytics Query Tools
 # -------------------------
 
-def top_customers_by_revenue(limit: int = 10):
+def top_customers_by_revenue(limit: int = 10, time_period: str | None = None):
     """
-    Retrieve the top customers ranked by total revenue generated.
+    Retrieve the top customers ranked by total revenue generated within a time period.
 
     Parameters:
         limit (int, optional): Maximum number of customers to return. Defaults to 10.
+        time_period (str, optional): Natural language time range like
+                                     '2025', 'Q3 2024', 'this quarter',
+                                     'last month', 'today', or None (defaults to current year).
 
     Returns:
         list: A list of customer records including customer_id, full name, and total revenue.
     """
+    start_date, end_date = parse_time_period(time_period)
+    
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -467,10 +476,11 @@ def top_customers_by_revenue(limit: int = 10):
                    SUM(o.total_amount) AS total_revenue
             FROM fact_orders o
             JOIN dim_customer c ON o.customer_id = c.customer_id
+            WHERE o.order_date BETWEEN %s AND %s
             GROUP BY c.customer_id, c.first_name, c.last_name
             ORDER BY total_revenue DESC
             LIMIT %s
-        """, (limit,))
+        """, (start_date, end_date, limit))
         rows = cur.fetchall()
         return rows
     finally:
@@ -478,38 +488,7 @@ def top_customers_by_revenue(limit: int = 10):
         conn.close()
 
 
-def sales_by_category(start_date: str, end_date: str):
-    """
-    Calculate total sales revenue grouped by product category within a date range.
-
-    Parameters:
-        start_date (str): Start date in 'YYYY-MM-DD' format.
-        end_date (str): End date in 'YYYY-MM-DD' format.
-
-    Returns:
-        list: A list of records including category name and total sales revenue.
-    """
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT p.category, SUM(oi.total_price) AS total_sales
-            FROM fact_order_items oi
-            JOIN fact_orders o ON oi.order_id = o.order_id
-            JOIN dim_product p ON oi.product_id = p.product_id
-            JOIN dim_date d ON o.order_date_id = d.date_id
-            WHERE d.full_date BETWEEN %s AND %s
-            GROUP BY p.category
-            ORDER BY total_sales DESC
-        """, (start_date, end_date))
-        rows = cur.fetchall()
-        return rows
-    finally:
-        cur.close()
-        conn.close()
-
-
-def daily_sales_trend(start_date: str, end_date: str):
+def daily_sales_trend(time_period: str | None = None):
     """
     Retrieve daily total sales revenue for a given date range.
 
@@ -520,6 +499,9 @@ def daily_sales_trend(start_date: str, end_date: str):
     Returns:
         list: A list of records including each date and its corresponding total sales.
     """
+
+    start_date, end_date = parse_time_period(time_period)
+
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -538,7 +520,7 @@ def daily_sales_trend(start_date: str, end_date: str):
         conn.close()
 
 
-def sales_by_store(start_date: str, end_date: str):
+def sales_by_store(time_period: str | None = None):
     """
     Calculate total sales revenue grouped by store within a date range.
 
@@ -549,6 +531,8 @@ def sales_by_store(start_date: str, end_date: str):
     Returns:
         list: A list of records including store_id, store_name, and total sales revenue.
     """
+    start_date, end_date = parse_time_period(time_period)
+    
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -566,6 +550,95 @@ def sales_by_store(start_date: str, end_date: str):
     finally:
         cur.close()
         conn.close()
+
+def parse_time_period(time_period: str | None):
+    """
+    Parse a natural language time period into (start_date, end_date).
+
+    Supported formats:
+      - "2025"
+      - "Q3 2024", "Q1", "Q2", etc. (defaults to current year if no year given)
+      - "this year", "last year"
+      - "this quarter", "last quarter"
+      - "this month", "last month"
+      - "today", "yesterday"
+      - None (defaults to current year)
+
+    Returns:
+        (start_date, end_date) as YYYY-MM-DD strings
+    """
+    current_date = date.today()
+    current_year = current_date.year
+    
+    if not time_period:  # Default to current year
+        return f"{current_year}-01-01", f"{current_year}-12-31"
+    
+    t = time_period.strip().lower()
+
+    # ---- Relative terms ----
+    if t in ["today"]:
+        return str(current_date), str(current_date)
+
+    if t in ["yesterday"]:
+        y = current_date - timedelta(days=1)
+        return str(y), str(y)
+
+    if t in ["this year"]:
+        return f"{current_year}-01-01", f"{current_year}-12-31"
+
+    if t in ["last year"]:
+        year = current_year - 1
+        return f"{year}-01-01", f"{year}-12-31"
+
+    if t in ["this month"]:
+        start = current_date.replace(day=1)
+        end = (start + relativedelta(months=1)) - timedelta(days=1)
+        return str(start), str(end)
+
+    if t in ["last month"]:
+        start = (current_date.replace(day=1) - relativedelta(months=1))
+        end = (current_date.replace(day=1) - timedelta(days=1))
+        return str(start), str(end)
+
+    if t in ["this quarter"]:
+        q = (current_date.month - 1) // 3 + 1
+        start_month = (q - 1) * 3 + 1
+        start = date(current_year, start_month, 1)
+        end = (start + relativedelta(months=3)) - timedelta(days=1)
+        return str(start), str(end)
+
+    if t in ["last quarter"]:
+        q = (current_date.month - 1) // 3 + 1
+        year = current_year
+        if q == 1:  # last quarter was Q4 previous year
+            year -= 1
+            q = 4
+        else:
+            q -= 1
+        start_month = (q - 1) * 3 + 1
+        start = date(year, start_month, 1)
+        end = (start + relativedelta(months=3)) - timedelta(days=1)
+        return str(start), str(end)
+
+    # ---- Explicit year ----
+    year_match = re.match(r"^(\d{4})$", t)
+    if year_match:
+        year = int(year_match.group(1))
+        return f"{year}-01-01", f"{year}-12-31"
+
+    # ---- Quarters ----
+    quarter_match = re.match(r"^q([1-4])(?:\s+(\d{4}))?$", t, re.I)
+    if quarter_match:
+        q = int(quarter_match.group(1))
+        year = int(quarter_match.group(2)) if quarter_match.group(2) else current_year
+        start_month = (q - 1) * 3 + 1
+        start = date(year, start_month, 1)
+        end = (start + relativedelta(months=3)) - timedelta(days=1)
+        return str(start), str(end)
+
+    # ---- Default fallback ----
+    return f"{current_year}-01-01", f"{current_year}-12-31"
+
 
 
 def product_sales_rank(limit: int = 10):
