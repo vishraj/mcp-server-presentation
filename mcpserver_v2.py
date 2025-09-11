@@ -1,21 +1,21 @@
 import psycopg2
-from decimal import Decimal
-from datetime import date, datetime
-from dateutil.relativedelta import relativedelta
 import re
 import boto3
+import base64
+import json
+import os
+import random
+import asyncio
 
 from psycopg2.extras import RealDictCursor
-#from mcp.server.fastmcp import FastMCP, Context
 from InlineAgent.agent import InlineAgent
 from InlineAgent.action_group import ActionGroup
 from performance import store_performance 
+from decimal import Decimal
+from datetime import date, datetime
+from dateutil.relativedelta import relativedelta
 
-import asyncio
-import json
 
-# Initialize MCP server
-#mcp = FastMCP("PostgresServer")
 
 # PostgreSQL connection settings
 DB_CONFIG = {
@@ -32,7 +32,7 @@ def get_db_connection():
 # ------------------------------
 # READ
 # ------------------------------
-#@mcp.tool()
+#
 def get_employee_details(employee_id: int) -> str:
     """
     Get the employee details for the given employee_id from database.
@@ -54,7 +54,6 @@ def get_employee_details(employee_id: int) -> str:
         cur.close()
         conn.close()
 
-# @mcp.tool()
 def list_employees() -> str:
     """
      Fetch all the employee from database.
@@ -75,7 +74,7 @@ def list_employees() -> str:
 # ------------------------------
 # CREATE
 # ------------------------------
-# @mcp.tool()
+# 
 def add_employee( name: str, department: str, salary: float) -> str:
     """
     add a new employee or create a employee in database.
@@ -101,7 +100,6 @@ def add_employee( name: str, department: str, salary: float) -> str:
 # # ------------------------------
 # # UPDATE
 # # ------------------------------
-# @mcp.tool()
 def update_employee(employee_id: int, name: str = None, department: str = None, salary: float = None) -> str:
     """
     Update an existing employee record in database(only provided fields).
@@ -146,8 +144,6 @@ def update_employee(employee_id: int, name: str = None, department: str = None, 
 # # ------------------------------
 # # DELETE
 # # ------------------------------
-# @mcp.tool()
-
 def delete_employee(employee_id: int) -> str:
     """
     Delete an employee record by ID
@@ -169,7 +165,7 @@ def delete_employee(employee_id: int) -> str:
         cur.close()
         conn.close()
 
-#@mcp.tool()
+#
 def get_knowledge_base( user_query: str) -> str:
     """
     Get the pistachios farming details from AWS bedrock knowwledgebase.
@@ -202,32 +198,6 @@ def get_knowledge_base( user_query: str) -> str:
             output_text += event["chunk"]["bytes"].decode("utf-8")
     return output_text
 
-# Image Generation
-def generate_image(prompt: str, width: int = 512, height: int = 512) -> str:
-    """
-    Generates an image from a text prompt using a Bedrock multimodal model.
-
-    Parameters:
-        prompt (str): The text prompt describing the image to generate.
-        width (int, optional): The width of the generated image in pixels. Default is 512.
-        height (int, optional): The height of the generated image in pixels. Default is 512.
-
-    Returns:
-        str: Base64 encoded string of the generated image.
-    """
-    REGION = "us-east-1"
-    bedrock = boto3.client("bedrock", region_name=REGION)
-
-    response = bedrock.invoke_model(
-        ModelId="amazon-nova-canvas",  # or "stability-ai-stable-diffusion-3-large"
-        Body={
-            "prompt": prompt,
-            "width": width,
-            "height": height
-        }
-    )
-    image_base64 = response['Body']['image']  # exact key may vary by model
-    return image_base64
 
 # -------------------------
 # Dimension Tools
@@ -288,9 +258,9 @@ def add_product(product_name: str, category: str, brand: str, price: float) -> s
         cur.close()
         conn.close()
 
-# -------------------------
+# ---------------------------
 # Fact Tools (Orders + Sales)
-# -------------------------
+# ----------------------------
 def add_order(customer_id: int, store_id: int, order_date_id: int, total_amount: float, total_items: int, order_status: str) -> str:
     """
     Insert a new order record into the `fact_orders` table.
@@ -507,7 +477,7 @@ def top_customers_by_revenue(limit: int = 30):
             SELECT c.customer_id,
                    c.first_name || ' ' || c.last_name AS customer_name,
 				   extract(year from d.full_date) as year,
-				   extract(month from d.full_date) as month,
+				   to_char(d.full_date, 'Mon') as month,
 				   'Q' || extract( quarter from d.full_date) as quarter,
                    SUM(o.total_amount) AS total_revenue
             FROM fact_orders o JOIN dim_customer c 
@@ -518,7 +488,10 @@ def top_customers_by_revenue(limit: int = 30):
             extract(year from d.full_date),
             extract(month from d.full_date),
             extract( quarter from d.full_date)
-            ORDER BY total_revenue DESC
+            ORDER BY extract(year from d.full_date) DESC, 
+            extract(month from d.full_date) DESC,
+			extract( quarter from d.full_date) DESC,
+            total_revenue DESC
             LIMIT %s
         """, (limit,))
         rows = cur.fetchall()
@@ -571,7 +544,7 @@ def sales_by_category(limit: int = 30):
         cur.execute("""
             SELECT p.category, 
                 extract(year from d.full_date) as year,
-                extract(month from d.full_date) as month,
+                to_char(d.full_date, 'Mon') as month,
                 'Q' || extract( quarter from d.full_date) as quarter,
                 SUM(oi.total_price) AS total_sales
                 FROM fact_order_items oi
@@ -582,7 +555,10 @@ def sales_by_category(limit: int = 30):
                 extract(year from d.full_date),
                 extract(month from d.full_date),
                 'Q' || extract( quarter from d.full_date)
-            ORDER BY total_sales DESC
+            ORDER BY extract(year from d.full_date) DESC,
+                    extract(month from d.full_date) DESC,
+				    extract( quarter from d.full_date) DESC, 
+                    total_revenue DESC
             LIMIT %s
          """, (limit,))
         rows = cur.fetchall()
@@ -615,7 +591,7 @@ def daily_sales_trend(limit: int = 30):
                                 JOIN dim_product p ON oi.product_id = p.product_id
                                 JOIN dim_date d ON o.order_date_id = d.date_id
                 GROUP BY d.full_date, p.category
-                ORDER BY d.full_date,  SUM(o.total_amount) DESC
+                ORDER BY d.full_date desc,  SUM(o.total_amount) DESC
                 LIMIT %s
         """, (limit,))
         rows = cur.fetchall()
@@ -644,7 +620,7 @@ def sales_by_store(limit: int = 30):
                 s.store_id, 
                 s.store_name, 
                 extract(year from d.full_date) as year,
-                extract(month from d.full_date) as month,
+                to_char(d.full_date, 'Mon') as month,
                 'Q' || extract( quarter from d.full_date) as quarter,
                 SUM(o.total_amount) AS total_sales
             FROM fact_orders o
@@ -655,7 +631,10 @@ def sales_by_store(limit: int = 30):
             extract(year from d.full_date),
             extract(month from d.full_date),
             'Q' || extract( quarter from d.full_date)
-            ORDER BY total_sales DESC
+            ORDER BY extract(year from d.full_date) DESC,
+                     extract(month from d.full_date) DESC,
+				    extract( quarter from d.full_date) DESC,
+                    total_revenue DESC
             LIMIT %s
         """, (limit,))
         rows = cur.fetchall()
@@ -681,7 +660,7 @@ def product_sales_rank(limit: int = 30):
              SELECT p.product_id, 
                 p.product_name,
                 extract(year from d.full_date) as year,
-                extract(month from d.full_date) as month,
+                to_char(d.full_date, 'Mon') as month,
                 'Q' || extract( quarter from d.full_date) as quarter,
                 SUM(oi.total_price) AS total_sales
             FROM fact_order_items oi JOIN dim_product p 
@@ -695,7 +674,10 @@ def product_sales_rank(limit: int = 30):
                 extract(year from d.full_date),
                 extract(month from d.full_date),
                 'Q' || extract( quarter from d.full_date)
-            ORDER BY total_sales DESC
+            ORDER BY extract(year from d.full_date) DESC,
+                    extract(month from d.full_date) DESC,
+				    extract( quarter from d.full_date) DESC,
+                    total_revenue DESC
             LIMIT %s
         """, (limit,))
         rows = cur.fetchall()
@@ -894,20 +876,77 @@ def invoke_agent():
         tools=[list_tables, table_metadata, column_metadata, primary_keys, foreign_keys]
     )
 
-    # image generation action group
-    image_action_group = ActionGroup(
-    name="ImageGeneration",
-    description="Generate images from text prompts",
-    tools=[generate_image]
-    )
+    # # image generation action group
+    # image_action_group = ActionGroup(
+    # name="ImageGeneration",
+    # description="Generate images from text prompts",
+    # tools=[generate_image]
+    # )
 
 
     agent = InlineAgent(
     foundation_model="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-    instruction="You are a friendly assistant that is responsible for getting knowledge base details from structured data from Analytical data warehouse \
-    as well as unstructured knowledge from Bedrock knowledge base, \
-                present the structured data in tabular format for visualization, provide detailed reasoning on the returned results",
-    action_groups=[db_action_group,kb_action_group,lookup_action_group,analytics_action_group,metadata_action_group, image_action_group],
+    # instruction="You are a friendly assistant that is responsible for getting knowledge base details from structured data from Analytical data warehouse \
+    # as well as unstructured knowledge from Bedrock knowledge base, \
+    #             present the structured data in tabular format for visualization, provide detailed reasoning on the returned results",
+
+    # instruction="You are an MCP agent. For each user request, query structured sources (warehouse/SQL/files) and unstructured sources (Bedrock KB/docs). Return human readable summary markdown: human_summary_markdown.\
+    # human_summary_markdown must include:\
+    # - Title, a Markdown table (<=50 rows), 3-6 bullet insights, 1-3 recommended charts/filters, and any data-quality flags.\
+    # Rules:\
+    # - in Markdown format with commas and $ for currency.\
+    # - Use ISO 8601 for dates.\
+    # - Provide exact SQL used (parameterized placeholders) and explain aggregations or joins performed.\
+    # - If sources disagree, show both with provenance and explain likely reasons.\
+    # - Do NOT invent data or include internal chain-of-thought.",
+
+    instruction="""
+    SYSTEM / ASSISTANT ROLE:
+You are an MCP server agent that can query and combine multiple data sources:
+1) Structured sources (analytical data warehouse, SQL endpoints, BI data marts, CSV/Parquet files).
+2) Unstructured sources (Bedrock knowledge base documents, PDFs, notes, knowledge graphs, web APIs).
+
+OBJECTIVE:
+Given a user request, retrieve relevant structured and unstructured data, combine them where appropriate, and return:
+A) A concise human-readable summary (Markdown) including a rendered table (up to 50 rows), key metrics, and suggested charts.
+B) An evidence-backed, non-secret, non-chain-of-thought analysis describing findings, calculations, anomalies, and recommended next steps.
+
+IMPORTANT FORMAT RULES (MUST FOLLOW EXACTLY):
+
+1. Human summary (value for quick review):
+   - Provide a short Markdown (`human_summary_markdown`) that includes:
+     * Title,
+     * A  Markdown table rendered for up to 50 rows (columns ordered as in schema.displayName),
+     * 3–6 bullet insights (key metrics, top/bottom performers, anomalies),
+     * 1–3 recommended visualizations and filters to apply next,
+     * Any immediate data-quality concerns.
+
+BEHAVIOR / STEPS TO EXECUTE (on each user request):
+1. Identify what structured tables, SQL queries, or files are needed. If the user provided a SQL or table name, use it; otherwise suggest a safe parameterized SQL (use placeholders like :start_date).
+2. Execute structured queries; collect schema and sample rows; compute aggregates needed for visualization (sum, avg, median, top N).
+3. Query Bedrock/unstructured sources for supporting context. Extract short evidence snippets and map any entities/IDs to structured rows where possible.
+4. Merge structured + unstructured only where there is an explicit join key; do NOT invent mappings.
+5. Produce `human_summary_markdown` as described.
+6. If sources disagree, present both values, show provenance, and explain likely causes (timing, aggregation differences, filtering).
+7. Format numbers with thousands separators and currency symbol when placing in the human Markdown; 
+8. Use ISO 8601 for all dates.
+9. Use a fixed `display_limit` of 50 rows in Markdown but include `row_count` and an optional `next_page_token` in `metadata` if more rows exist.
+10. If requested visual is a bar/line chart, include suggested `y` axis range and gridlines option in `visualization_hint`.
+
+EXAMPLE
+
+"human_summary_markdown": "### Top Customers by Revenue - Q3 2025\n\n| Customer | Q3 2025 Revenue |\n|---|---:|\n| Charlie Davis | $36,114 |\n| Alice Johnson | $24,162 |\n\n**Key insights**:\n- Charlie Davis is top with $36,114 (49.5% higher than Alice Johnson).\n- No missing revenue values detected.\n\n**Recommended visualizations**: 1) Vertical bar chart (x=Customer, y=Q3 2025 Revenue) sorted desc. 2) Stacked bar if comparing multiple quarters.\n\n**Next steps**: Filter by region and product to confirm revenue concentration.\n"
+
+
+SAFETY & QUALITY NOTES:
+- NEVER fabricate data. If requested data is not available, return `rows: []` and `metadata.sample=true`, plus a list of data sources checked and suggestions for how to retrieve data.
+- Do NOT output any internal chain-of-thought. Provide only the concise analysis/justification and the exact calculations you performed (aggregations, formulas) so results are reproducible.
+- Do not include or return secrets or credentials. Parameterize SQL (e.g., WHERE date >= :start_date).
+
+END.
+""",
+
+    action_groups=[db_action_group,kb_action_group,lookup_action_group,analytics_action_group,metadata_action_group],
     agent_name="MockAgent",
     )
 
