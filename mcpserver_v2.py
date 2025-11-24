@@ -469,7 +469,7 @@ def top_customers_by_revenue(limit: int = 30):
 
     Returns:
         list: A list of customer records including customer_id, full name, and total revenue.
-    """
+    """s
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -489,8 +489,8 @@ def top_customers_by_revenue(limit: int = 30):
             extract(month from d.full_date),
             extract( quarter from d.full_date)
             ORDER BY extract(year from d.full_date) DESC, 
-            extract(month from d.full_date) DESC,
-			extract( quarter from d.full_date) DESC,
+            to_char(d.full_date, 'Mon') DESC,
+			extract(quarter from d.full_date) DESC,
             total_revenue DESC
             LIMIT %s
         """, (limit,))
