@@ -1,19 +1,30 @@
 import psycopg2
-from psycopg2.extras import RealDictCursor
-from datetime import datetime, date, timedelta
-from dateutil.relativedelta import relativedelta
 import re
-
-#from mcp.server.fastmcp import FastMCP, Context
-from InlineAgent.agent import InlineAgent
-from InlineAgent.action_group import ActionGroup
-
+import boto3
+import base64
+import json
+import os
+import random
 import asyncio
 
-# Initialize MCP server
-#mcp = FastMCP("PostgresServer")
+from psycopg2.extras import RealDictCursor
+from InlineAgent.agent import InlineAgent
+from InlineAgent.action_group import ActionGroup
+from performance import store_performance 
+from decimal import Decimal
+from datetime import date, datetime
+from dateutil.relativedelta import relativedelta
 
 
+
+# PostgreSQL connection settings
+DB_CONFIG = {
+    "user": "masteruser",          # replace with your username
+    "password": "w%>y&ZNyH%QFe#qp", # replace with your password
+    "dbname": "postgres",   # replace with your database
+    "host": "aurora-postgres-cluster.cluster-cwly6uee6mq1.us-east-1.rds.amazonaws.com",
+    "port": 5432
+}
 
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
@@ -21,7 +32,7 @@ def get_db_connection():
 # ------------------------------
 # READ
 # ------------------------------
-#@mcp.tool()
+#
 def get_employee_details(employee_id: int) -> str:
     """
     Get the employee details for the given employee_id from database.
@@ -43,7 +54,6 @@ def get_employee_details(employee_id: int) -> str:
         cur.close()
         conn.close()
 
-# @mcp.tool()
 def list_employees() -> str:
     """
      Fetch all the employee from database.
@@ -64,7 +74,7 @@ def list_employees() -> str:
 # ------------------------------
 # CREATE
 # ------------------------------
-# @mcp.tool()
+# 
 def add_employee( name: str, department: str, salary: float) -> str:
     """
     add a new employee or create a employee in database.
@@ -90,7 +100,6 @@ def add_employee( name: str, department: str, salary: float) -> str:
 # # ------------------------------
 # # UPDATE
 # # ------------------------------
-# @mcp.tool()
 def update_employee(employee_id: int, name: str = None, department: str = None, salary: float = None) -> str:
     """
     Update an existing employee record in database(only provided fields).
@@ -135,8 +144,6 @@ def update_employee(employee_id: int, name: str = None, department: str = None, 
 # # ------------------------------
 # # DELETE
 # # ------------------------------
-# @mcp.tool()
-
 def delete_employee(employee_id: int) -> str:
     """
     Delete an employee record by ID
@@ -158,7 +165,7 @@ def delete_employee(employee_id: int) -> str:
         cur.close()
         conn.close()
 
-#@mcp.tool()
+#
 def get_knowledge_base( user_query: str) -> str:
     """
     Get the pistachios farming details from AWS bedrock knowwledgebase.
@@ -166,13 +173,13 @@ def get_knowledge_base( user_query: str) -> str:
     Parameters:
         user_query: user prompt
     """
-    import boto3
+   
     output_text = ""
     response = ""
     # Replace with your values
     REGION = "us-east-1"
     AGENT_ID = "NDIOYYWRVL"       # The Bedrock Agent ID
-    AGENT_ALIAS_ID = "TJ2SV1O9JH" # The alias for your agent
+    AGENT_ALIAS_ID = "NWYFAEELRA" # The alias for your agent
 
     # Create Bedrock Agent Runtime client
     client = boto3.client("bedrock-agent-runtime", region_name=REGION)
@@ -190,6 +197,7 @@ def get_knowledge_base( user_query: str) -> str:
         if "chunk" in event:
             output_text += event["chunk"]["bytes"].decode("utf-8")
     return output_text
+
 
 # -------------------------
 # Dimension Tools
@@ -250,9 +258,9 @@ def add_product(product_name: str, category: str, brand: str, price: float) -> s
         cur.close()
         conn.close()
 
-# -------------------------
+# ---------------------------
 # Fact Tools (Orders + Sales)
-# -------------------------
+# ----------------------------
 def add_order(customer_id: int, store_id: int, order_date_id: int, total_amount: float, total_items: int, order_status: str) -> str:
     """
     Insert a new order record into the `fact_orders` table.
@@ -330,7 +338,7 @@ def list_customers(limit: int = 20):
             LIMIT %s
         """, (limit,))
         rows = cur.fetchall()
-        return rows
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -366,7 +374,7 @@ def list_products(category: str = None, limit: int = 20):
                 LIMIT %s
             """, (limit,))
         rows = cur.fetchall()
-        return rows
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -388,7 +396,7 @@ def list_stores():
             ORDER BY store_name
         """)
         rows = cur.fetchall()
-        return rows
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -416,7 +424,7 @@ def orders_by_customer(customer_id: int):
             ORDER BY d.full_date DESC
         """, (customer_id,))
         rows = cur.fetchall()
-        return rows
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -443,7 +451,7 @@ def order_items(order_id: int):
             ORDER BY oi.order_item_id
         """, (order_id,))
         rows = cur.fetchall()
-        return rows
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -452,196 +460,190 @@ def order_items(order_id: int):
 # Analytics Query Tools
 # -------------------------
 
-def top_customers_by_revenue(limit: int = 10, time_period: str | None = None):
+def top_customers_by_revenue(limit: int = 30):
     """
-    Retrieve the top customers ranked by total revenue generated within a time period.
+    Retrieve the top customers ranked by total revenue generated.
 
     Parameters:
         limit (int, optional): Maximum number of customers to return. Defaults to 10.
-        time_period (str, optional): Natural language time range like
-                                     '2025', 'Q3 2024', 'this quarter',
-                                     'last month', 'today', or None (defaults to current year).
 
     Returns:
         list: A list of customer records including customer_id, full name, and total revenue.
     """
-    start_date, end_date = parse_time_period(time_period)
-    
     conn = get_db_connection()
     cur = conn.cursor()
     try:
         cur.execute("""
             SELECT c.customer_id,
                    c.first_name || ' ' || c.last_name AS customer_name,
+				   extract(year from d.full_date) as year,
+				   to_char(d.full_date, 'Mon') as month,
+				   'Q' || extract( quarter from d.full_date) as quarter,
                    SUM(o.total_amount) AS total_revenue
-            FROM fact_orders o
-            JOIN dim_customer c ON o.customer_id = c.customer_id
-            WHERE o.order_date BETWEEN %s AND %s
-            GROUP BY c.customer_id, c.first_name, c.last_name
-            ORDER BY total_revenue DESC
+            FROM fact_orders o JOIN dim_customer c 
+                ON o.customer_id = c.customer_id
+            JOIN dim_date d
+                ON o.order_date_id = d.date_id
+            GROUP BY c.customer_id, c.first_name, c.last_name,  
+            extract(year from d.full_date),
+            extract(month from d.full_date),
+            extract( quarter from d.full_date)
+            ORDER BY extract(year from d.full_date) DESC, 
+            to_char(d.full_date, 'Mon') DESC,
+			extract(quarter from d.full_date) DESC,
+            total_revenue DESC
             LIMIT %s
-        """, (start_date, end_date, limit))
+        """, (limit,))
         rows = cur.fetchall()
-        return rows
+        
+        # Convert rows into list of dicts with proper JSON-safe values
+        # results = []
+        # for row in rows:
+        #     safe_row = {}
+        #     for key, value in row.items():
+        #         if isinstance(value, Decimal):
+        #             safe_row[key] = float(value)  # Convert Decimal → float
+        #         else:
+        #             safe_row[key] = value
+        #     results.append(safe_row)
+
+        # print("call complete")
+        return json.dumps(convertrowstostring(rows))   # Always returns a JSON-safe string
+    finally:
+        cur.close()
+        conn.close()
+
+def convertrowstostring(rows):
+        results = []
+        for row in rows:
+            safe_row = {}
+            for key, value in row.items():
+                if isinstance(value, Decimal):
+                    safe_row[key] = float(value)  # Convert Decimal → float
+                elif isinstance(value, (date, datetime)):
+                    safe_row[key] = value.isoformat()
+                else:
+                    safe_row[key] = value
+            results.append(safe_row)
+        return results
+
+
+def sales_by_category(limit: int = 30):
+    """
+    Calculate total sales revenue grouped by product category within a date range.
+
+     Parameters:
+        limit (int, optional): Maximum number of customers to return. Defaults to 10.
+
+    Returns:
+        list: A list of records including category name and total sales revenue.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT p.category, 
+                extract(year from d.full_date) as year,
+                to_char(d.full_date, 'Mon') as month,
+                'Q' || extract( quarter from d.full_date) as quarter,
+                SUM(oi.total_price) AS total_sales
+                FROM fact_order_items oi
+                JOIN fact_orders o ON oi.order_id = o.order_id
+                JOIN dim_product p ON oi.product_id = p.product_id
+                JOIN dim_date d ON o.order_date_id = d.date_id
+                GROUP BY p.category,
+                extract(year from d.full_date),
+                extract(month from d.full_date),
+                'Q' || extract( quarter from d.full_date)
+            ORDER BY extract(year from d.full_date) DESC,
+                    extract(month from d.full_date) DESC,
+				    extract( quarter from d.full_date) DESC, 
+                    total_revenue DESC
+            LIMIT %s
+         """, (limit,))
+        rows = cur.fetchall()
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
 
 
-def daily_sales_trend(time_period: str | None = None):
+def daily_sales_trend(limit: int = 30):
     """
-    Retrieve daily total sales revenue for a given date range.
+    Retrieve daily total sales trends
 
-    Parameters:
-        start_date (str): Start date in 'YYYY-MM-DD' format.
-        end_date (str): End date in 'YYYY-MM-DD' format.
+     Parameters:
+        limit (int, optional): Maximum number of customers to return. Defaults to 10.
 
     Returns:
         list: A list of records including each date and its corresponding total sales.
     """
-
-    start_date, end_date = parse_time_period(time_period)
-
     conn = get_db_connection()
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT d.full_date, SUM(o.total_amount) AS daily_sales
-            FROM fact_orders o
-            JOIN dim_date d ON o.order_date_id = d.date_id
-            WHERE d.full_date BETWEEN %s AND %s
-            GROUP BY d.full_date
-            ORDER BY d.full_date
-        """, (start_date, end_date))
+             SELECT 
+                d.full_date, 
+                p.category as category,
+                SUM(o.total_amount) AS daily_sales
+                FROM fact_order_items oi
+                                JOIN fact_orders o ON oi.order_id = o.order_id
+                                JOIN dim_product p ON oi.product_id = p.product_id
+                                JOIN dim_date d ON o.order_date_id = d.date_id
+                GROUP BY d.full_date, p.category
+                ORDER BY d.full_date desc,  SUM(o.total_amount) DESC
+                LIMIT %s
+        """, (limit,))
         rows = cur.fetchall()
-        return rows
+
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
 
 
-def sales_by_store(time_period: str | None = None):
+def sales_by_store(limit: int = 30):
     """
     Calculate total sales revenue grouped by store within a date range.
 
-    Parameters:
-        start_date (str): Start date in 'YYYY-MM-DD' format.
-        end_date (str): End date in 'YYYY-MM-DD' format.
+     Parameters:
+        limit (int, optional): Maximum number of customers to return. Defaults to 10..
 
     Returns:
         list: A list of records including store_id, store_name, and total sales revenue.
     """
-    start_date, end_date = parse_time_period(time_period)
-    
     conn = get_db_connection()
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT s.store_id, s.store_name, SUM(o.total_amount) AS total_sales
+            SELECT 
+                s.store_id, 
+                s.store_name, 
+                extract(year from d.full_date) as year,
+                to_char(d.full_date, 'Mon') as month,
+                'Q' || extract( quarter from d.full_date) as quarter,
+                SUM(o.total_amount) AS total_sales
             FROM fact_orders o
             JOIN dim_store s ON o.store_id = s.store_id
             JOIN dim_date d ON o.order_date_id = d.date_id
-            WHERE d.full_date BETWEEN %s AND %s
-            GROUP BY s.store_id, s.store_name
-            ORDER BY total_sales DESC
-        """, (start_date, end_date))
+            GROUP BY s.store_id, 
+            s.store_name,
+            extract(year from d.full_date),
+            extract(month from d.full_date),
+            'Q' || extract( quarter from d.full_date)
+            ORDER BY extract(year from d.full_date) DESC,
+                     extract(month from d.full_date) DESC,
+				    extract( quarter from d.full_date) DESC,
+                    total_revenue DESC
+            LIMIT %s
+        """, (limit,))
         rows = cur.fetchall()
-        return rows
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
 
-def parse_time_period(time_period: str | None):
-    """
-    Parse a natural language time period into (start_date, end_date).
-
-    Supported formats:
-      - "2025"
-      - "Q3 2024", "Q1", "Q2", etc. (defaults to current year if no year given)
-      - "this year", "last year"
-      - "this quarter", "last quarter"
-      - "this month", "last month"
-      - "today", "yesterday"
-      - None (defaults to current year)
-
-    Returns:
-        (start_date, end_date) as YYYY-MM-DD strings
-    """
-    current_date = date.today()
-    current_year = current_date.year
-    
-    if not time_period:  # Default to current year
-        return f"{current_year}-01-01", f"{current_year}-12-31"
-    
-    t = time_period.strip().lower()
-
-    # ---- Relative terms ----
-    if t in ["today"]:
-        return str(current_date), str(current_date)
-
-    if t in ["yesterday"]:
-        y = current_date - timedelta(days=1)
-        return str(y), str(y)
-
-    if t in ["this year"]:
-        return f"{current_year}-01-01", f"{current_year}-12-31"
-
-    if t in ["last year"]:
-        year = current_year - 1
-        return f"{year}-01-01", f"{year}-12-31"
-
-    if t in ["this month"]:
-        start = current_date.replace(day=1)
-        end = (start + relativedelta(months=1)) - timedelta(days=1)
-        return str(start), str(end)
-
-    if t in ["last month"]:
-        start = (current_date.replace(day=1) - relativedelta(months=1))
-        end = (current_date.replace(day=1) - timedelta(days=1))
-        return str(start), str(end)
-
-    if t in ["this quarter"]:
-        q = (current_date.month - 1) // 3 + 1
-        start_month = (q - 1) * 3 + 1
-        start = date(current_year, start_month, 1)
-        end = (start + relativedelta(months=3)) - timedelta(days=1)
-        return str(start), str(end)
-
-    if t in ["last quarter"]:
-        q = (current_date.month - 1) // 3 + 1
-        year = current_year
-        if q == 1:  # last quarter was Q4 previous year
-            year -= 1
-            q = 4
-        else:
-            q -= 1
-        start_month = (q - 1) * 3 + 1
-        start = date(year, start_month, 1)
-        end = (start + relativedelta(months=3)) - timedelta(days=1)
-        return str(start), str(end)
-
-    # ---- Explicit year ----
-    year_match = re.match(r"^(\d{4})$", t)
-    if year_match:
-        year = int(year_match.group(1))
-        return f"{year}-01-01", f"{year}-12-31"
-
-    # ---- Quarters ----
-    quarter_match = re.match(r"^q([1-4])(?:\s+(\d{4}))?$", t, re.I)
-    if quarter_match:
-        q = int(quarter_match.group(1))
-        year = int(quarter_match.group(2)) if quarter_match.group(2) else current_year
-        start_month = (q - 1) * 3 + 1
-        start = date(year, start_month, 1)
-        end = (start + relativedelta(months=3)) - timedelta(days=1)
-        return str(start), str(end)
-
-    # ---- Default fallback ----
-    return f"{current_year}-01-01", f"{current_year}-12-31"
-
-
-
-def product_sales_rank(limit: int = 10):
+def product_sales_rank(limit: int = 30):
     """
     Retrieve the top-selling products ranked by total sales revenue.
 
@@ -655,15 +657,31 @@ def product_sales_rank(limit: int = 10):
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT p.product_id, p.product_name, SUM(oi.total_price) AS total_sales
-            FROM fact_order_items oi
-            JOIN dim_product p ON oi.product_id = p.product_id
-            GROUP BY p.product_id, p.product_name
-            ORDER BY total_sales DESC
+             SELECT p.product_id, 
+                p.product_name,
+                extract(year from d.full_date) as year,
+                to_char(d.full_date, 'Mon') as month,
+                'Q' || extract( quarter from d.full_date) as quarter,
+                SUM(oi.total_price) AS total_sales
+            FROM fact_order_items oi JOIN dim_product p 
+                    ON oi.product_id = p.product_id
+            JOIN fact_orders o
+                    ON oi.order_id = o.order_id
+            JOIN dim_date d
+                    ON o.order_date_id = d.date_id
+            GROUP BY p.product_id, 
+                p.product_name,
+                extract(year from d.full_date),
+                extract(month from d.full_date),
+                'Q' || extract( quarter from d.full_date)
+            ORDER BY extract(year from d.full_date) DESC,
+                    extract(month from d.full_date) DESC,
+				    extract( quarter from d.full_date) DESC,
+                    total_revenue DESC
             LIMIT %s
         """, (limit,))
         rows = cur.fetchall()
-        return rows
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -689,7 +707,8 @@ def list_tables():
             ORDER BY table_name
         """)
         rows = cur.fetchall()
-        return [r["table_name"] for r in rows]
+
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -715,7 +734,7 @@ def table_metadata(table_name: str):
             ORDER BY ordinal_position
         """, (table_name,))
         rows = cur.fetchall()
-        return rows
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -741,7 +760,8 @@ def column_metadata(table_name: str, column_name: str):
             WHERE table_name = %s AND column_name = %s
         """, (table_name, column_name))
         row = cur.fetchone()
-        return row
+        print(row)
+        return json.dumps(convertrowstostring(row))
     finally:
         cur.close()
         conn.close()
@@ -770,7 +790,7 @@ def primary_keys(table_name: str):
               AND tc.table_name = %s
         """, (table_name,))
         rows = cur.fetchall()
-        return [r["column_name"] for r in rows]
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -807,7 +827,7 @@ def foreign_keys(table_name: str):
               AND tc.table_name = %s
         """, (table_name,))
         rows = cur.fetchall()
-        return rows
+        return json.dumps(convertrowstostring(rows))
     finally:
         cur.close()
         conn.close()
@@ -816,18 +836,23 @@ def foreign_keys(table_name: str):
 # Run the MCP server
 # ------------------------------
 
-def  invoke_agent():
+def invoke_agent():
     db_action_group = ActionGroup(
     name="databaseAction",
     description="This is action group to get database details",
     tools=[get_employee_details,add_employee,list_employees,update_employee,delete_employee]
     )
 
+    kb_action_group = ActionGroup(
+    name="Knowledgebase",
+    description="This is action group to get knowledgebase details",
+    tools=[get_knowledge_base]
+    )
     # Dimension + Fact Action Group
     dimension_fact_action_group = ActionGroup(
         name="DimensionFact",
         description="This action group manages dimensions (customers, products) and fact data (orders, order items).",
-        tools=[add_customer, add_product, add_order, add_order_item]
+        tools=[add_customer, add_product, add_order, add_order_item,get_employee_details,add_employee,list_employees,update_employee,delete_employee]
     )
 
     # Lookup / Query Action Group
@@ -841,7 +866,7 @@ def  invoke_agent():
     analytics_action_group = ActionGroup(
         name="Analytics",
         description="This action group provides analytical queries such as top customers, sales by category, daily trends, and product sales rank.",
-        tools=[top_customers_by_revenue, sales_by_category, daily_sales_trend, sales_by_store, product_sales_rank]
+        tools=[top_customers_by_revenue, sales_by_category, daily_sales_trend, store_performance, product_sales_rank]
     )
 
     # Metadata / Introspection Action Group
@@ -851,16 +876,77 @@ def  invoke_agent():
         tools=[list_tables, table_metadata, column_metadata, primary_keys, foreign_keys]
     )
 
-    kb_action_group = ActionGroup(
-    name="Knowledgebase",
-    description="This is action group to get knowledgebase details",
-    tools=[get_knowledge_base]
-    )
+    # # image generation action group
+    # image_action_group = ActionGroup(
+    # name="ImageGeneration",
+    # description="Generate images from text prompts",
+    # tools=[generate_image]
+    # )
+
 
     agent = InlineAgent(
     foundation_model="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-    instruction="You are a friendly assistant that is responsible for getting the current weather.",
-    action_groups=[db_action_group,kb_action_group],
+    # instruction="You are a friendly assistant that is responsible for getting knowledge base details from structured data from Analytical data warehouse \
+    # as well as unstructured knowledge from Bedrock knowledge base, \
+    #             present the structured data in tabular format for visualization, provide detailed reasoning on the returned results",
+
+    # instruction="You are an MCP agent. For each user request, query structured sources (warehouse/SQL/files) and unstructured sources (Bedrock KB/docs). Return human readable summary markdown: human_summary_markdown.\
+    # human_summary_markdown must include:\
+    # - Title, a Markdown table (<=50 rows), 3-6 bullet insights, 1-3 recommended charts/filters, and any data-quality flags.\
+    # Rules:\
+    # - in Markdown format with commas and $ for currency.\
+    # - Use ISO 8601 for dates.\
+    # - Provide exact SQL used (parameterized placeholders) and explain aggregations or joins performed.\
+    # - If sources disagree, show both with provenance and explain likely reasons.\
+    # - Do NOT invent data or include internal chain-of-thought.",
+
+    instruction="""
+    SYSTEM / ASSISTANT ROLE:
+You are an MCP server agent that can query and combine multiple data sources:
+1) Structured sources (analytical data warehouse, SQL endpoints, BI data marts, CSV/Parquet files).
+2) Unstructured sources (Bedrock knowledge base documents, PDFs, notes, knowledge graphs, web APIs).
+
+OBJECTIVE:
+Given a user request, retrieve relevant structured and unstructured data, combine them where appropriate, and return:
+A) A concise human-readable summary (Markdown) including a rendered table (up to 50 rows), key metrics, and suggested charts.
+B) An evidence-backed, non-secret, non-chain-of-thought analysis describing findings, calculations, anomalies, and recommended next steps.
+
+IMPORTANT FORMAT RULES (MUST FOLLOW EXACTLY):
+
+1. Human summary (value for quick review):
+   - Provide a short Markdown (`human_summary_markdown`) that includes:
+     * Title,
+     * A  Markdown table rendered for up to 50 rows (columns ordered as in schema.displayName),
+     * 3–6 bullet insights (key metrics, top/bottom performers, anomalies),
+     * 1–3 recommended visualizations and filters to apply next,
+     * Any immediate data-quality concerns.
+
+BEHAVIOR / STEPS TO EXECUTE (on each user request):
+1. Identify what structured tables, SQL queries, or files are needed. If the user provided a SQL or table name, use it; otherwise suggest a safe parameterized SQL (use placeholders like :start_date).
+2. Execute structured queries; collect schema and sample rows; compute aggregates needed for visualization (sum, avg, median, top N).
+3. Query Bedrock/unstructured sources for supporting context. Extract short evidence snippets and map any entities/IDs to structured rows where possible.
+4. Merge structured + unstructured only where there is an explicit join key; do NOT invent mappings.
+5. Produce `human_summary_markdown` as described.
+6. If sources disagree, present both values, show provenance, and explain likely causes (timing, aggregation differences, filtering).
+7. Format numbers with thousands separators and currency symbol when placing in the human Markdown; 
+8. Use ISO 8601 for all dates.
+9. Use a fixed `display_limit` of 50 rows in Markdown but include `row_count` and an optional `next_page_token` in `metadata` if more rows exist.
+10. If requested visual is a bar/line chart, include suggested `y` axis range and gridlines option in `visualization_hint`.
+
+EXAMPLE
+
+"human_summary_markdown": "### Top Customers by Revenue - Q3 2025\n\n| Customer | Q3 2025 Revenue |\n|---|---:|\n| Charlie Davis | $36,114 |\n| Alice Johnson | $24,162 |\n\n**Key insights**:\n- Charlie Davis is top with $36,114 (49.5% higher than Alice Johnson).\n- No missing revenue values detected.\n\n**Recommended visualizations**: 1) Vertical bar chart (x=Customer, y=Q3 2025 Revenue) sorted desc. 2) Stacked bar if comparing multiple quarters.\n\n**Next steps**: Filter by region and product to confirm revenue concentration.\n"
+
+
+SAFETY & QUALITY NOTES:
+- NEVER fabricate data. If requested data is not available, return `rows: []` and `metadata.sample=true`, plus a list of data sources checked and suggestions for how to retrieve data.
+- Do NOT output any internal chain-of-thought. Provide only the concise analysis/justification and the exact calculations you performed (aggregations, formulas) so results are reproducible.
+- Do not include or return secrets or credentials. Parameterize SQL (e.g., WHERE date >= :start_date).
+
+END.
+""",
+
+    action_groups=[db_action_group,kb_action_group,lookup_action_group,analytics_action_group,metadata_action_group],
     agent_name="MockAgent",
     )
 

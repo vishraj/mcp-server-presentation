@@ -2,6 +2,7 @@ from mcpserver import invoke_agent
 import asyncio
 import os
 import boto3
+import base64
 import streamlit as st
 import html
 st.set_page_config(layout="wide")
